@@ -150,13 +150,13 @@ function checkAndUpdateVideoList() {
     });
 }
 
-// Instead of updating on every bot start, only check and update if needed
+// check if update is needed
 checkAndUpdateVideoList();
 
 // Schedule a daily update (every 24 hours)
 setInterval(loadVideoList, 24 * 60 * 60 * 1000);
 
-// Log when the Discord client is ready
+
 client.once("ready", () => {
     console.log(`Logged in as ${client.user.tag}!`);
 });
@@ -201,11 +201,11 @@ client.on("messageCreate", async (message) => {
 
         console.log("Available video titles:", titles);
 
-        // Use string-similarity to find the best match for the message
+        
         const bestMatch = stringSimilarity.findBestMatch(input, titles);
         console.log("Best match rating:", bestMatch.bestMatch.rating, "for title:", bestMatch.bestMatch.target);
 
-        // Set a threshold for similarity (0.48 in this example)
+        
         const threshold = 0.448;
         if (bestMatch.bestMatch.rating >= threshold) {
             const matchedTitle = bestMatch.bestMatch.target;
@@ -223,7 +223,7 @@ client.on("messageCreate", async (message) => {
     });
 });
 
-// Login to Discord and log the process
+
 client.login(DISCORD_TOKEN)
     .then(() => {
         console.log("Discord client logged in successfully.");
@@ -232,7 +232,7 @@ client.login(DISCORD_TOKEN)
         console.error("Error during Discord login:", err);
     });
 
-// Global handler for unhandled promise rejections
+
 process.on("unhandledRejection", (error) => {
     console.error("Unhandled promise rejection:", error);
 });
