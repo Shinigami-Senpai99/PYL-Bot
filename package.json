@@ -13,9 +13,10 @@
     "eslint": "^9.19.0"
   },
   "dependencies": {
-    "string-similarity": "^4.0.3",
     "axios": "^1.7.9",
     "discord.js": "^14.14.1",
-    "dotenv": "^16.4.7"
+    "dotenv": "^16.4.7",
+    "sqlite3": "^5.1.7",
+    "string-similarity": "^4.0.3"
   }
 }

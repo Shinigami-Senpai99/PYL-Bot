@@ -2,6 +2,7 @@ require("dotenv").config();
 const { Client, GatewayIntentBits, PermissionFlagsBits } = require("discord.js");
 const axios = require("axios");
 const stringSimilarity = require("string-similarity");
+const sqlite3 = require("sqlite3").verbose();
 
 const client = new Client({
     intents: [
@@ -16,12 +17,42 @@ const YOUTUBE_CHANNEL_ID = process.env.YOUTUBE_CHANNEL_ID;
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 
 console.log("Environment variables loaded.");
-console.log("Youtube API Key", !!YOUTUBE_API_KEY)
+console.log("Youtube API Key:", !!YOUTUBE_API_KEY);
 console.log("YouTube Channel ID:", YOUTUBE_CHANNEL_ID);
 console.log("Discord Token exists:", !!DISCORD_TOKEN);
 
-// Map to store video titles (lowercase) -> video URL
-let videoMap = new Map();
+// Connect to the SQLite database (or create it if it doesn't exist)
+const db = new sqlite3.Database("./videos.db", (err) => {
+    if (err) {
+        console.error("Error connecting to the database:", err);
+    } else {
+        console.log("Connected to the SQLite database.");
+    }
+});
+
+// Create the 'videos' table if it doesn't exist
+db.run(`CREATE TABLE IF NOT EXISTS videos (
+    title TEXT PRIMARY KEY,
+    videoUrl TEXT
+)`, (err) => {
+    if (err) {
+        console.error("Error creating videos table:", err);
+    } else {
+        console.log("Videos table is ready.");
+    }
+});
+
+// Create a 'metadata' table to store additional information (like last update time)
+db.run(`CREATE TABLE IF NOT EXISTS metadata (
+    key TEXT PRIMARY KEY,
+    value TEXT
+)`, (err) => {
+    if (err) {
+        console.error("Error creating metadata table:", err);
+    } else {
+        console.log("Metadata table is ready.");
+    }
+});
 
 // Fetch the uploads playlist ID for the channel
 async function fetchUploadsPlaylistId() {
@@ -38,7 +69,7 @@ async function fetchUploadsPlaylistId() {
     }
 }
 
-// Load video list from the uploads playlist
+// Load video list from the uploads playlist and update the database
 async function loadVideoList() {
     console.log("Loading video list...");
     const playlistId = await fetchUploadsPlaylistId();
@@ -48,30 +79,82 @@ async function loadVideoList() {
     }
 
     try {
-        const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId=${playlistId}&key=${YOUTUBE_API_KEY}&maxResults=50`;
-        console.log("Fetching video list from URL:", url);
-        const response = await axios.get(url);
-        const items = response.data.items;
+        let nextPageToken = '';
+        // Clear existing videos from the table
+        db.run("DELETE FROM videos", (err) => {
+            if (err) console.error("Error clearing videos table:", err);
+            else console.log("Cleared existing videos from the database.");
+        });
 
-        // Clear existing map
-        videoMap.clear();
+        // Loop through pages (each page returns up to 50 videos)
+        do {
+            const url = `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId=${playlistId}&key=${YOUTUBE_API_KEY}&maxResults=50&pageToken=${nextPageToken}`;
+            console.log("Fetching video list from URL:", url);
+            const response = await axios.get(url);
+            const items = response.data.items;
 
-        for (const item of items) {
-            const title = item.snippet.title.toLowerCase().trim();
-            const videoId = item.snippet.resourceId.videoId;
-            const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-            videoMap.set(title, videoUrl);
-            console.log("Loaded video:", title, videoUrl);
-        }
-        console.log(`Loaded ${videoMap.size} videos from channel.`);
+            // Insert each video into the database
+            for (const item of items) {
+                const title = item.snippet.title.toLowerCase().trim();
+                const videoId = item.snippet.resourceId.videoId;
+                const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
+                db.run("INSERT OR REPLACE INTO videos (title, videoUrl) VALUES (?, ?)", [title, videoUrl], (err) => {
+                    if (err) {
+                        console.error("Error inserting video into database:", err);
+                    } else {
+                        console.log("Inserted video:", title, videoUrl);
+                    }
+                });
+            }
+
+            nextPageToken = response.data.nextPageToken;
+        } while (nextPageToken);
+
+        // After successfully updating the video list, update the lastUpdate timestamp in metadata
+        const now = new Date().toISOString();
+        db.run("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", ["lastUpdate", now], (err) => {
+            if (err) {
+                console.error("Error updating lastUpdate in metadata:", err);
+            } else {
+                console.log("Updated lastUpdate timestamp to:", now);
+            }
+        });
+        console.log("Finished loading videos from channel.");
     } catch (error) {
         console.error("Error loading video list:", error);
     }
 }
 
-// Load video list on startup and refresh every hour
-loadVideoList();
-setInterval(loadVideoList, 60 * 60 * 1000);
+// Check if the video list needs updating (once every 24 hours)
+function checkAndUpdateVideoList() {
+    db.get("SELECT value FROM metadata WHERE key = ?", ["lastUpdate"], (err, row) => {
+        if (err) {
+            console.error("Error fetching lastUpdate from metadata:", err);
+            return;
+        }
+        const now = new Date();
+        if (!row) {
+            console.log("No lastUpdate found. Loading video list for the first time...");
+            loadVideoList();
+        } else {
+            const lastUpdate = new Date(row.value);
+            const diff = now - lastUpdate;
+            // 24 hours = 24 * 60 * 60 * 1000 milliseconds
+            if (diff >= 24 * 60 * 60 * 1000) {
+                console.log("More than 24 hours since last update. Loading video list...");
+                loadVideoList();
+            } else {
+                console.log("Video list is up-to-date. Last update was at:", row.value);
+            }
+        }
+    });
+}
+
+// Instead of updating on every bot start, only check and update if needed
+checkAndUpdateVideoList();
+
+// Schedule a daily update (every 24 hours)
+setInterval(loadVideoList, 24 * 60 * 60 * 1000);
 
 // Log when the Discord client is ready
 client.once("ready", () => {
@@ -83,7 +166,7 @@ client.on("messageCreate", async (message) => {
     // Ignore messages from bots
     if (message.author.bot) return;
 
-    // If the message is in a guild, check if the bot has permission to send messages in that channel
+    // Check permissions if in a guild
     if (message.guild) {
         const botPermissions = message.channel.permissionsFor(message.guild.members.me);
         if (!botPermissions || !botPermissions.has(PermissionFlagsBits.SendMessages)) {
@@ -97,33 +180,47 @@ client.on("messageCreate", async (message) => {
     // Normalize the incoming message
     const input = message.content.toLowerCase().trim();
 
-    // If no videos are loaded yet, log and do nothing
-    if (videoMap.size === 0) {
-        console.log("Video list is empty. Ignoring message.");
-        return;
-    }
-
-    // Get all stored video titles as an array
-    const titles = Array.from(videoMap.keys());
-    console.log("Available video titles:", titles);
-
-    // Use string-similarity to find the best match for the message
-    const bestMatch = stringSimilarity.findBestMatch(input, titles);
-    console.log("Best match rating:", bestMatch.bestMatch.rating, "for title:", bestMatch.bestMatch.target);
-
-    // Set a threshold for similarity (0.48 in this example)
-    const threshold = 0.48;
-    if (bestMatch.bestMatch.rating >= threshold) {
-        const matchedTitle = bestMatch.bestMatch.target;
-        const videoUrl = videoMap.get(matchedTitle);
-        console.log(`Matched title "${matchedTitle}" with URL ${videoUrl}`);
-        try {
-            await message.reply(`Here's the video you mentioned: ${videoUrl}`);
-            console.log("Reply sent successfully.");
-        } catch (error) {
-            console.error("Failed to send reply:", error);
+    // Query the database for all video titles and URLs
+    db.all("SELECT title, videoUrl FROM videos", [], async (err, rows) => {
+        if (err) {
+            console.error("Error querying videos from database:", err);
+            return;
         }
-    }
+
+        if (!rows || rows.length === 0) {
+            console.log("No videos found in the database.");
+            return;
+        }
+
+        // Extract titles and create a mapping for quick lookup
+        const titles = rows.map(row => row.title);
+        const videoMapping = {};
+        rows.forEach(row => {
+            videoMapping[row.title] = row.videoUrl;
+        });
+
+        console.log("Available video titles:", titles);
+
+        // Use string-similarity to find the best match for the message
+        const bestMatch = stringSimilarity.findBestMatch(input, titles);
+        console.log("Best match rating:", bestMatch.bestMatch.rating, "for title:", bestMatch.bestMatch.target);
+
+        // Set a threshold for similarity (0.48 in this example)
+        const threshold = 0.448;
+        if (bestMatch.bestMatch.rating >= threshold) {
+            const matchedTitle = bestMatch.bestMatch.target;
+            const videoUrl = videoMapping[matchedTitle];
+            console.log(`Matched title "${matchedTitle}" with URL ${videoUrl}`);
+            try {
+                await message.reply(`Here's the video you mentioned: ${videoUrl}`);
+                console.log("Reply sent successfully.");
+            } catch (error) {
+                console.error("Failed to send reply:", error);
+            }
+        } else {
+            console.log("No matching video found.");
+        }
+    });
 });
 
 // Login to Discord and log the process
