@@ -1,3 +1,6 @@
 .env
 .vscode
 /.vs
+*.db
+/node_modules
+/obj
