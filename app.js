@@ -16,6 +16,7 @@ const YOUTUBE_CHANNEL_ID = process.env.YOUTUBE_CHANNEL_ID;
 const DISCORD_TOKEN = process.env.DISCORD_TOKEN;
 
 console.log("Environment variables loaded.");
+console.log("Youtube API Key", !!YOUTUBE_API_KEY)
 console.log("YouTube Channel ID:", YOUTUBE_CHANNEL_ID);
 console.log("Discord Token exists:", !!DISCORD_TOKEN);
 
